@@ -1,10 +1,10 @@
 ---
-title: "Boston"
+title: "boston"
 author: "richard martin"
 date: "January 10, 2018"
 output: 
-  html_document:
-    keep_md: true
+  html_document: 
+    keep_md: yes
 ---
 
 
