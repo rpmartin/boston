@@ -1,6 +1,6 @@
 ---
-title: "boston"
-author: "richard martin"
+title: "Housing prices in Boston"
+author: "Richard Martin"
 date: "January 10, 2018"
 output: 
   html_document: 
@@ -8,25 +8,112 @@ output:
 ---
 
 ```{r setup, include=FALSE}
+options(scipen = 100, digits=4)
 knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(dev='svg', fig.width=11, fig.height=11, out.width='1200px') 
+set.seed(123)
+library(MASS)
+library(tidyverse)
+library(knitr)
+library(stargazer)
+library(mgcv)
+library(partykit)
+rm(list=ls())
+my.boston <- Boston
+my.boston <- within(my.boston,{
+  chas <-  factor(chas, labels=c("far","close")) 
+  zn <- cut(zn,breaks=c(-Inf, 0, Inf),labels=c("zero","positive")) #most values were zero: recode as factor (zero vs. positive)
+  black <- .63-sqrt(black/1000)#undo weird transformation
+  lmedv <- log(medv)
+ })
+in.testing <- sample(0:1, size=nrow(my.boston), replace=TRUE, prob=c(.75,.25))
+training <- filter(my.boston, in.testing==0)
+testing <- filter(my.boston, in.testing==1)
 ```
 
-## R Markdown
+## Housekeeping
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+Start by looking for missing values: 
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+```{r missing, echo=FALSE}
+count.nas <- function(vec) sum(is.na(vec))
+kable(summarise_all(my.boston, count.nas), caption="Missing Values")
 ```
 
-## Including Plots
+Note that proximity to the Charles river *chas* has been coded 0/1: convert to a factor with levels far and close.  The proportion of residential land zoned for lots over 25,000 sq.ft *zn* is mostly zero: convert to factor with levels zero and positive.  Variable *black* is $1000(Bk - 0.63)^2$ where *Bk* is the proportion of blacks by town: transform so *black* is proportion of blacks by town. Data is randomly split 75/25 into training and testing sets.
 
-You can also embed plots, for example:
+## Histograms of continuous variables
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+
+```{r plot, echo=FALSE, results='hide',message=FALSE, }
+select(my.boston,-chas,-zn,-rad) %>% 
+    tidyr::gather(variable, value) %>% 
+    ggplot(aes(value)) + 
+        geom_histogram() + 
+        facet_wrap(~variable, scales = 'free_x')
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## Models: training set
+
+```{r models}
+l.model <- lm(medv~ . , data=select(training, -lmedv))
+ll.model <- lm(lmedv~ . , data=select(training, -medv))
+gam.model <- gam(lmedv~zn+chas+rad+s(crim)+s(indus)+s(nox)+s(rm)+s(age)+s(dis)+s(tax)+s(ptratio)+s(black)+s(lstat), data=select(training, -medv))
+ctree.model <- ctree(lmedv~. , control = ctree_control(mincriterion = .9999), data=select(training, -medv))
+cforest.model <- cforest(lmedv~., data=select(training, -medv, -zn, -chas, -rad))
+```
+
+## OLS Results
+
+```{r result, echo=FALSE, results='asis'}
+stargazer(l.model, ll.model, type = 'html')
+```
+
+## GAM Partial Plots
+
+```{r plot gam, echo=FALSE, results='hide',message=FALSE}
+par(mfrow=c(3,4))
+plot(gam.model,residuals=TRUE)
+```
+
+## Conditional Inference Tree
+
+```{r plot tree, echo=FALSE, results='hide',message=FALSE}
+plot(ctree.model) 
+```
+
+## Variable importance cforest
+
+```{r, echo=FALSE, results='hide',message=FALSE}
+
+cforestImpPlot <- function(x,cnd) {
+  cforest_importance <<- v <- varimp(x,conditional= cnd)
+  dotchart(v[order(v)],main=paste("cforest variable importance: Conditional Permutation", cnd))
+}
+par(mfrow=c(2,1))
+cforestImpPlot(cforest.model, TRUE)
+cforestImpPlot(cforest.model, FALSE)
+
+
+```
+
+## Predicted vs Actual: testing set 
+
+```{r echo=FALSE, results='hide',message=FALSE}
+
+par(mfrow=c(3,2))
+plot(testing$medv,predict.lm(l.model,testing), xlab="actual",ylab="predicted",main=paste("linear: RMSE=", round(sqrt(mean((testing$medv - predict.lm(l.model, testing)) ^ 2 )), digits=2 )))
+abline(a=0,b=1)
+plot(testing$medv, exp(predict.lm(ll.model,testing)), xlab="actual",ylab="predicted", main=paste("log-linear: RMSE=", round(sqrt(mean((testing$medv-exp(predict.lm(ll.model, testing)))^2)), digits=2 )))
+abline(a=0,b=1)
+plot(testing$medv,exp(predict.gam(gam.model,testing)), xlab="actual",ylab="predicted",main=paste("log-gam: RMSE=", round(sqrt(mean((testing$medv - exp(predict.gam(gam.model, testing))) ^ 2)), digits=2 )))
+abline(a=0,b=1)
+plot(testing$medv,exp(predict(ctree.model,testing)), xlab="actual",ylab="predicted",main=paste("log-ctree: RMSE=", round(sqrt(mean((testing$medv - exp(predict(ctree.model, testing))) ^ 2)), digits=2 )))
+abline(a=0,b=1)
+
+plot(testing$medv,exp(predict(cforest.model, newdata = testing, OOB=TRUE, type = "response")), xlab="actual",ylab="predicted",main=paste("log-cforest: RMSE=", round(sqrt(mean((testing$medv - exp(predict(cforest.model, newdata = testing, OOB=TRUE, type = "response"))) ^ 2)), digits=2 )))
+abline(a=0,b=1)
+
+
+```
+
